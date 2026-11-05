@@ -14,10 +14,29 @@
     </header>
 
     <main class="layout">
-      <!-- LEFT: task board -->
+      <!-- LEFT: stats + task board -->
       <section class="board-col">
         <h1>My tasks</h1>
         <p class="subtitle">Organize tasks by asking your AI assistant</p>
+
+        <div class="stats">
+          <div class="stat">
+            <div class="stat-num total" id="stat-total">0</div>
+            <div class="stat-label">Total</div>
+          </div>
+          <div class="stat">
+            <div class="stat-num todo" id="stat-todo">0</div>
+            <div class="stat-label">Todo</div>
+          </div>
+          <div class="stat">
+            <div class="stat-num progress" id="stat-progress">0</div>
+            <div class="stat-label">In progress</div>
+          </div>
+          <div class="stat">
+            <div class="stat-num done" id="stat-done">0</div>
+            <div class="stat-label">Done</div>
+          </div>
+        </div>
 
         <div class="board">
           <div class="board-head">
