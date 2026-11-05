@@ -1,11 +1,20 @@
 import os
 from flask import Flask, jsonify
 from dotenv import load_dotenv
+
 from db import init_db
+import task_service
+
 load_dotenv()
 
 app = Flask(__name__)
 init_db()
+
+try:
+    upserted, removed = task_service.reconcile_index()
+    print(f"[index] synced {upserted} tasks, removed {removed} stale entries")
+except Exception as e:
+    print(f"[warning] could not sync search index at startup: {e}")
 
 
 @app.route("/")
