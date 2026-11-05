@@ -4,12 +4,52 @@ const messages = document.getElementById("messages");
 const form = document.getElementById("chat-form");
 const input = document.getElementById("chat-input");
 const sendBtn = document.getElementById("send-btn");
+const clearBtn = document.getElementById("clear-btn");
 
 /* Remembers which tasks are expanded, so a refresh doesn't collapse them */
 const openIds = new Set();
 
 /* Recent chat messages, sent to the server so "it" and "that task" make sense */
-const history = [];
+let history = [];
+
+/* ---------- Saved chat (survives refresh) ---------- */
+const CHAT_KEY = "taskflow.chat.v1";
+const MAX_SAVED = 100;
+const WELCOME =
+  'Hi! Tell me what to do with your tasks, for example: "Create a high-priority task to finish the demo tomorrow."';
+let savedMessages = [];
+
+function saveChat() {
+  try {
+    localStorage.setItem(CHAT_KEY, JSON.stringify({ messages: savedMessages, history }));
+  } catch (err) {
+    /* storage full or blocked: the chat still works, it just won't persist */
+  }
+}
+
+function loadChat() {
+  try {
+    const data = JSON.parse(localStorage.getItem(CHAT_KEY));
+    if (!data || !Array.isArray(data.messages)) return false;
+
+    savedMessages = data.messages
+      .filter((m) => m && ["user", "bot", "error"].includes(m.kind) && typeof m.text === "string")
+      .slice(-MAX_SAVED);
+    history = Array.isArray(data.history)
+      ? data.history
+          .filter((h) => h && ["user", "assistant"].includes(h.role) && typeof h.content === "string")
+          .slice(-6)
+      : [];
+
+    savedMessages.forEach((m) => {
+      messages.appendChild(el("div", `msg ${m.kind}`, m.text));
+    });
+    messages.scrollTop = messages.scrollHeight;
+    return savedMessages.length > 0;
+  } catch (err) {
+    return false;
+  }
+}
 
 /* Build an element safely: text goes in with textContent, never innerHTML */
 function el(tag, className, text) {
@@ -163,9 +203,14 @@ async function loadTasks() {
 
 /* ---------- Chat ---------- */
 
-function addMessage(kind, text) {
+function addMessage(kind, text, { save = true } = {}) {
   messages.appendChild(el("div", `msg ${kind}`, text));
   messages.scrollTop = messages.scrollHeight;
+  if (save) {
+    savedMessages.push({ kind, text });
+    if (savedMessages.length > MAX_SAVED) savedMessages.splice(0, savedMessages.length - MAX_SAVED);
+    saveChat();
+  }
 }
 
 async function sendMessage(text) {
@@ -188,6 +233,7 @@ async function sendMessage(text) {
     history.push({ role: "user", content: text });
     history.push({ role: "assistant", content: data.message });
     if (history.length > 6) history.splice(0, history.length - 6);
+    saveChat();
 
     if (data.tasks_changed) loadTasks();
   } catch (err) {
@@ -215,6 +261,20 @@ input.addEventListener("keydown", (e) => {
   }
 });
 
+/* ---------- Clear chat ---------- */
+clearBtn.addEventListener("click", () => {
+  if (!confirm("Clear the whole chat? Your tasks will not be affected.")) return;
+  savedMessages = [];
+  history = [];
+  messages.replaceChildren();
+  try {
+    localStorage.removeItem(CHAT_KEY);
+  } catch (err) {}
+  addMessage("bot", WELCOME, { save: false });
+});
+
 /* ---------- Start ---------- */
-addMessage("bot", "Hi! Tell me what to do with your tasks, for example: \"Create a high-priority task to finish the demo tomorrow.\"");
+if (!loadChat()) {
+  addMessage("bot", WELCOME, { save: false });
+}
 loadTasks();

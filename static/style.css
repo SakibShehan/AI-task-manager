@@ -192,7 +192,24 @@ h1 { margin: 0; font-size: 28px; color: var(--navy); }
   font-weight: 700;
   font-size: 17px;
   color: var(--navy);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
 }
+.clear-btn {
+  flex: none;
+  background: #fff;
+  border: 1px solid #c9d6f2;
+  border-radius: 8px;
+  padding: 5px 11px;
+  font: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  color: #3a5498;
+  cursor: pointer;
+}
+.clear-btn:hover { background: #fde9e6; border-color: #f5c6c0; color: #a8332a; }
 .spark { margin-right: 6px; }
 .chat-hint { font-size: 12px; color: var(--muted); margin: 10px 6px 8px; }
 
