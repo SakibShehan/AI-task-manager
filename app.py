@@ -1,7 +1,7 @@
 import os
 
 from dotenv import load_dotenv
-from flask import Flask, jsonify, request
+from flask import Flask, jsonify, render_template, request
 from werkzeug.exceptions import HTTPException
 
 import task_service
@@ -60,7 +60,7 @@ def handle_unexpected_error(e):
 
 @app.route("/")
 def home():
-    return "AI Task Manager is running"
+    return render_template("index.html")
 
 
 @app.route("/api/health")

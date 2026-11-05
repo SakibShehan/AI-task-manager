@@ -1,0 +1,53 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>TaskFlow - AI Task Manager</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+  <div class="app">
+    <header class="topbar">
+      <div class="brand">TASKFLOW</div>
+      <div class="tagline">AI TASK MANAGER</div>
+    </header>
+
+    <main class="layout">
+      <!-- LEFT: task board -->
+      <section class="board-col">
+        <h1>My tasks</h1>
+        <p class="subtitle">Organize tasks by asking your AI assistant</p>
+
+        <div class="board">
+          <div class="board-head">
+            <h2>Task board</h2>
+            <span class="count-pill">All tasks <b id="task-count">0</b></span>
+          </div>
+          <ul id="task-list" class="task-list"></ul>
+        </div>
+      </section>
+
+      <!-- RIGHT: AI chat -->
+      <aside class="chat">
+        <div class="chat-title"><span class="spark">✦</span> AI Assistant</div>
+        <p class="chat-hint">Manage everything with a message</p>
+
+        <div id="messages" class="messages"></div>
+
+        <form id="chat-form" class="instruction">
+          <label for="chat-input">YOUR INSTRUCTION</label>
+          <textarea id="chat-input" rows="2" maxlength="1000"
+                    placeholder="Type a task instruction..."></textarea>
+          <div class="instruction-foot">
+            <span class="example">e.g. Complete the weekly report</span>
+            <button id="send-btn" type="submit">Send</button>
+          </div>
+        </form>
+      </aside>
+    </main>
+  </div>
+
+  <script src="{{ url_for('static', filename='app.js') }}"></script>
+</body>
+</html>
