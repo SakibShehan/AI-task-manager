@@ -8,6 +8,9 @@ const sendBtn = document.getElementById("send-btn");
 /* Remembers which tasks are expanded, so a refresh doesn't collapse them */
 const openIds = new Set();
 
+/* Recent chat messages, sent to the server so "it" and "that task" make sense */
+const history = [];
+
 /* Build an element safely: text goes in with textContent, never innerHTML */
 function el(tag, className, text) {
   const node = document.createElement(tag);
@@ -167,16 +170,28 @@ function addMessage(kind, text) {
 
 async function sendMessage(text) {
   addMessage("user", text);
+  const thinking = el("div", "msg bot", "Thinking...");
+  messages.appendChild(thinking);
+  messages.scrollTop = messages.scrollHeight;
   sendBtn.disabled = true;
+
   try {
     const res = await fetch("/api/chat", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ message: text }),
+      body: JSON.stringify({ message: text, history }),
     });
     const data = await res.json();
+    thinking.remove();
     addMessage(data.success ? "bot" : "error", data.message);
+
+    history.push({ role: "user", content: text });
+    history.push({ role: "assistant", content: data.message });
+    if (history.length > 6) history.splice(0, history.length - 6);
+
+    if (data.tasks_changed) loadTasks();
   } catch (err) {
+    thinking.remove();
     addMessage("error", "Could not reach the server. Is it running?");
   } finally {
     sendBtn.disabled = false;

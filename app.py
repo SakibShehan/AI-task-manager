@@ -5,7 +5,9 @@ from flask import Flask, jsonify, render_template, request
 from werkzeug.exceptions import HTTPException
 
 import task_service
+from agent import PlannerError, plan_actions
 from db import init_db
+from executor import execute_plan
 from task_service import TaskError
 
 load_dotenv()
@@ -38,11 +40,29 @@ def json_body():
     return data
 
 
+def clean_history(raw):
+    """Accept only a short list of {role, content} strings from the browser."""
+    if not isinstance(raw, list):
+        return []
+    cleaned = []
+    for item in raw[-6:]:
+        if (isinstance(item, dict)
+                and item.get("role") in ("user", "assistant")
+                and isinstance(item.get("content"), str)):
+            cleaned.append({"role": item["role"], "content": item["content"][:1000]})
+    return cleaned
+
+
 # ---------- Error handlers ----------
 
 @app.errorhandler(TaskError)
 def handle_task_error(e):
     return fail(str(e), 400)
+
+
+@app.errorhandler(PlannerError)
+def handle_planner_error(e):
+    return fail(str(e), 503)
 
 
 @app.errorhandler(HTTPException)
@@ -107,17 +127,17 @@ def api_search():
 
 @app.route("/api/chat", methods=["POST"])
 def api_chat():
-    message = json_body().get("message")
+    body = json_body()
+    message = body.get("message")
     if not isinstance(message, str) or not message.strip():
         raise TaskError("message is required")
     message = message.strip()
     if len(message) > 1000:
         raise TaskError("message is too long (maximum 1000 characters)")
 
-    return ok(
-        f"Chat agent is not connected yet. You said: {message}",
-        tasks_changed=False,
-    )
+    plan = plan_actions(message, clean_history(body.get("history")))
+    result = execute_plan(plan)
+    return ok(result["message"], tasks_changed=result["tasks_changed"])
 
 
 if __name__ == "__main__":
