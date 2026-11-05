@@ -135,3 +135,62 @@ def delete_task(task_id):
     with get_conn() as conn:
         cursor = conn.execute("DELETE FROM tasks WHERE id = ?", (task_id,))
         return cursor.rowcount > 0
+
+
+def _get(conn, task_id):
+    """Read a task using an already-open connection (sees uncommitted changes)."""
+    row = conn.execute("SELECT * FROM tasks WHERE id = ?", (task_id,)).fetchone()
+    return dict(row) if row else None
+
+
+def apply_changes(operations):
+    """Run many creates/updates/deletes in ONE transaction: all succeed or none do.
+    operations: [{"op": "create", "data": {...}},
+                 {"op": "update", "id": "TSK-000001", "changes": {...}},
+                 {"op": "delete", "id": "TSK-000001"}]
+    Returns one result per operation (the task, or the deleted task for deletes).
+    Raises LookupError if a task no longer exists; everything is rolled back."""
+    results = []
+    with get_conn() as conn:
+        for op in operations:
+            kind = op["op"]
+
+            if kind == "create":
+                data = op["data"]
+                task_id = _next_task_id(conn)
+                stamp = now()
+                conn.execute(
+                    """
+                    INSERT INTO tasks
+                        (id, title, description, status, priority, due_date, created_at, updated_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (task_id, data["title"], data.get("description"), data["status"],
+                     data["priority"], data.get("due_date"), stamp, stamp),
+                )
+                results.append(_get(conn, task_id))
+
+            elif kind == "update":
+                fields = {k: v for k, v in op["changes"].items() if k in EDITABLE_FIELDS}
+                if not fields:
+                    results.append(_get(conn, op["id"]))
+                    continue
+                set_clause = ", ".join(f"{col} = ?" for col in fields)
+                cursor = conn.execute(
+                    f"UPDATE tasks SET {set_clause}, updated_at = ? WHERE id = ?",
+                    list(fields.values()) + [now(), op["id"]],
+                )
+                if cursor.rowcount == 0:
+                    raise LookupError(f"Task {op['id']} no longer exists.")
+                results.append(_get(conn, op["id"]))
+
+            elif kind == "delete":
+                before = _get(conn, op["id"])
+                if not before:
+                    raise LookupError(f"Task {op['id']} no longer exists.")
+                conn.execute("DELETE FROM tasks WHERE id = ?", (op["id"],))
+                results.append(before)
+
+            else:
+                raise LookupError(f"Unknown operation '{kind}'.")
+    return results

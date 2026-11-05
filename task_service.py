@@ -77,7 +77,40 @@ def delete_task(task_id):
     _unsync(task_id)
     return task  # returned so the reply can say what was deleted
 
+# ---------- Batch (all-or-nothing) ----------
 
+def apply_batch(operations):
+    """Validate every operation, run them in one SQLite transaction, then sync the index.
+    Raises TaskError (and changes nothing) if any operation is invalid or fails."""
+    clean_ops = []
+    for number, op in enumerate(operations, start=1):
+        try:
+            if op["op"] == "create":
+                clean_ops.append({"op": "create", "data": TaskCreate(**op["data"]).to_db()})
+            elif op["op"] == "update":
+                clean = TaskUpdate(**op["changes"]).to_db()
+                if "title" in clean and clean["title"] is None:
+                    raise TaskError("title: cannot be empty")
+                clean_ops.append({"op": "update", "id": op["id"], "changes": clean})
+            elif op["op"] == "delete":
+                clean_ops.append({"op": "delete", "id": op["id"]})
+            else:
+                raise TaskError(f"unknown operation '{op['op']}'")
+        except ValidationError as e:
+            raise TaskError(f"Operation {number}: {format_error(e)}. Nothing was changed.")
+
+    try:
+        results = db.apply_changes(clean_ops)
+    except LookupError as e:
+        raise TaskError(f"{e} Nothing was changed.")
+
+    # Only after the commit succeeded: update the search index
+    for op, task in zip(clean_ops, results):
+        if op["op"] == "delete":
+            _unsync(task["id"])
+        else:
+            _sync(task)
+    return results
 # ---------- Semantic search ----------
 
 def search_tasks(query, n=5, unfinished_only=False, max_distance=None):

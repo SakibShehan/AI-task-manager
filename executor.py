@@ -146,26 +146,6 @@ def _run_find(action):
     return text
 
 
-def _run_one(action, task):
-    if action.type == "create_task":
-        created = task_service.create_task(action.data)
-        return f"Created {describe(created)}", True
-
-    if action.type == "update_task":
-        updated = task_service.update_task(task["id"], action.data)
-        return f"Updated {describe(updated)}", True
-
-    if action.type == "complete_task":
-        if task["status"] == "Done":
-            return f"{task['id']}: {task['title']} is already Done.", False
-        done = task_service.update_task(task["id"], {"status": "Done"})
-        return f"Marked done: {describe(done)}", True
-
-    if action.type == "delete_task":
-        deleted = task_service.delete_task(task["id"])
-        return f"Deleted {deleted['id']}: {deleted['title']}", True
-
-    return _run_find(action), False
 
 
 # ---------- Clarification ----------
@@ -225,8 +205,73 @@ def resume(pending, reply):
 
 
 # ---------- Entry point ----------
+def _build_operations(prepared):
+    """Turn validated actions into batch operations.
+    Returns (operations, slots) where slots[i] is the operation index for action i, or None."""
+    operations, slots = [], []
+    for action, task in prepared:
+        if action.type == "create_task":
+            operations.append({"op": "create", "data": action.data})
+        elif action.type == "update_task":
+            operations.append({"op": "update", "id": task["id"], "changes": action.data})
+        elif action.type == "complete_task" and task["status"] != "Done":
+            operations.append({"op": "update", "id": task["id"], "changes": {"status": "Done"}})
+        elif action.type == "delete_task":
+            operations.append({"op": "delete", "id": task["id"]})
+        else:
+            slots.append(None)  # find_tasks, or a task that is already Done
+            continue
+        slots.append(len(operations) - 1)
+    return operations, slots
+
 
 def execute_plan(plan: ActionPlan, chosen=None):
+    """Returns {"message", "tasks_changed"} and, if a question was asked, "pending"."""
+    chosen = chosen or {}
+    if not plan.actions:
+        return {"message": plan.reply or "I'm not sure what to do. Could you rephrase?",
+                "tasks_changed": False}
+
+    try:
+        prepared = prepare(plan, chosen)  # raises TaskError before anything is changed
+    except Ambiguous as e:
+        return {
+            "message": _question(e),
+            "tasks_changed": False,
+            "pending": {
+                "plan": plan.model_dump(mode="json"),
+                "chosen": {str(k): v for k, v in chosen.items()},
+                "index": e.index,
+                "options": [t["id"] for t in e.candidates],
+            },
+        }
+
+    # Run all changes in ONE transaction: all succeed or none do
+    operations, slots = _build_operations(prepared)
+    results = []
+    if operations:
+        try:
+            results = task_service.apply_batch(operations)
+        except TaskError as e:
+            return {"message": f"{e}", "tasks_changed": False}
+
+    # Build the reply in the same order as the user's actions
+    lines = []
+    for (action, task), slot in zip(prepared, slots):
+        if action.type == "find_tasks":
+            lines.append(_run_find(action))
+        elif slot is None:  # complete_task on a task that was already Done
+            lines.append(f"{task['id']}: {task['title']} is already Done.")
+        elif action.type == "create_task":
+            lines.append(f"Created {describe(results[slot])}")
+        elif action.type == "update_task":
+            lines.append(f"Updated {describe(results[slot])}")
+        elif action.type == "complete_task":
+            lines.append(f"Marked done: {describe(results[slot])}")
+        elif action.type == "delete_task":
+            lines.append(f"Deleted {results[slot]['id']}: {results[slot]['title']}")
+
+    return {"message": "\n".join(lines), "tasks_changed": bool(operations)}
     """Returns {"message", "tasks_changed"} and, if a question was asked, "pending"."""
     chosen = chosen or {}
     if not plan.actions:
