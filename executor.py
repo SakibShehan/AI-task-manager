@@ -1,8 +1,10 @@
+import os
 import re
+
+from pydantic import ValidationError
 
 import task_service
 from agent import ActionPlan
-from pydantic import ValidationError
 from schemas import (
     TaskCreate,
     TaskUpdate,
@@ -15,6 +17,21 @@ from task_service import TaskError
 ID_PATTERN = re.compile(r"^TSK-\d{1,9}$", re.IGNORECASE)
 MAX_LISTED = 15
 
+# Cosine distance: lower = more similar. Tune these using /api/search (see the test step).
+MATCH_MAX_DISTANCE = float(os.getenv("MATCH_MAX_DISTANCE") or 0.65)  # to change/delete a task
+FIND_MAX_DISTANCE = float(os.getenv("FIND_MAX_DISTANCE") or 0.70)    # for "show tasks about ..."
+AMBIGUITY_GAP = 0.05  # matches this close to the best one count as equally good
+
+
+class Ambiguous(Exception):
+    """Several tasks fit a target equally well, so the user must choose."""
+
+    def __init__(self, target, candidates):
+        super().__init__(target)
+        self.target = target
+        self.candidates = candidates
+        self.index = 0  # which action in the plan; filled in by prepare()
+
 
 # ---------- Helpers ----------
 
@@ -23,52 +40,76 @@ def describe(task):
     return f"{task['id']}: {task['title']} ({task['priority']}, {task['status']}, {due})"
 
 
-def resolve_target(target):
-    """Find exactly one real task. Commit 10 replaces the fallback with semantic search."""
+def resolve_target(target, prefer_unfinished=False):
+    """Return exactly one real task, raise Ambiguous, or raise TaskError."""
     text = target.strip()
+
+    # 1) Exact ID
     if ID_PATTERN.match(text):
         return task_service.get_task(text.upper())  # raises TaskError if missing
 
-    matches = [t for t in task_service.list_tasks() if t["title"].strip().lower() == text.lower()]
-    if len(matches) == 1:
-        return matches[0]
-    if len(matches) > 1:
-        ids = ", ".join(t["id"] for t in matches)
-        raise TaskError(f"More than one task is titled '{target}' ({ids}). Please use an ID.")
-    raise TaskError(
-        f"I couldn't find a task called '{target}'. "
-        "Use its ID (like TSK-000001) or its exact title."
+    # 2) Exact title (case-insensitive)
+    exact = [t for t in task_service.list_tasks() if t["title"].strip().lower() == text.lower()]
+    if len(exact) == 1:
+        return exact[0]
+    if len(exact) > 1:
+        raise Ambiguous(target, exact)
+
+    # 3) Semantic search with a relevance cutoff
+    hits = task_service.search_tasks(
+        text, n=5, unfinished_only=prefer_unfinished, max_distance=MATCH_MAX_DISTANCE
     )
+    if not hits and prefer_unfinished:
+        hits = task_service.search_tasks(text, n=5, max_distance=MATCH_MAX_DISTANCE)
+    if not hits:
+        raise TaskError(
+            f"I couldn't find a task matching '{target}'. "
+            "Try its ID (like TSK-000001) or different words."
+        )
+
+    best = hits[0]["distance"]
+    close = [t for t in hits if t["distance"] - best <= AMBIGUITY_GAP]
+    if len(close) == 1:
+        return close[0]
+    raise Ambiguous(target, close)
 
 
 def _find_filters(action):
-    """Clean the status/priority filters of a find_tasks action."""
     status = _normalize_status(action.status) if action.status else None
     priority = _normalize_priority(action.priority) if action.priority else None
-    # list_tasks validates the values and raises TaskError if they are wrong
-    task_service.list_tasks(status=status, priority=priority)
+    task_service.list_tasks(status=status, priority=priority)  # raises TaskError if invalid
     return status, priority
+
+
+def _target(action, index, chosen):
+    """Use the user's earlier choice if there is one, otherwise resolve the phrase."""
+    if index in chosen:
+        return task_service.get_task(chosen[index])
+    return resolve_target(action.target, prefer_unfinished=(action.type == "complete_task"))
 
 
 # ---------- Step 1: validate everything, change nothing ----------
 
-def prepare(plan):
+def prepare(plan, chosen):
     prepared = []
-    for number, action in enumerate(plan.actions, start=1):
-        label = f"Action {number} ({action.type})"
+    for index, action in enumerate(plan.actions):
+        label = f"Action {index + 1} ({action.type})"
         try:
             if action.type == "create_task":
                 TaskCreate(**action.data)
                 prepared.append((action, None))
             elif action.type == "update_task":
-                task = resolve_target(action.target)
+                task = _target(action, index, chosen)
                 TaskUpdate(**action.data)
                 prepared.append((action, task))
             elif action.type in ("complete_task", "delete_task"):
-                prepared.append((action, resolve_target(action.target)))
+                prepared.append((action, _target(action, index, chosen)))
             else:  # find_tasks
                 _find_filters(action)
                 prepared.append((action, None))
+        except Ambiguous as e:
+            e.index = index
+            raise
         except ValidationError as e:
             raise TaskError(f"{label}: {format_error(e)}. Nothing was changed.")
         except TaskError as e:
@@ -82,7 +123,11 @@ def _run_find(action):
     status, priority = _find_filters(action)
 
     if action.query:
-        found = task_service.search_tasks(action.query, n=10, unfinished_only=action.unfinished_only)
+        found = task_service.search_tasks(
+            action.query, n=10,
+            unfinished_only=action.unfinished_only,
+            max_distance=FIND_MAX_DISTANCE,
+        )
         if status:
             found = [t for t in found if t["status"] == status]
         if priority:
@@ -123,13 +168,84 @@ def _run_one(action, task):
     return _run_find(action), False
 
 
-def execute_plan(plan: ActionPlan):
-    """Returns {"message": str, "tasks_changed": bool}."""
+# ---------- Clarification ----------
+
+def _question(e):
+    lines = [f"'{e.target}' could mean {len(e.candidates)} different tasks. Which one do you mean?"]
+    for number, task in enumerate(e.candidates, start=1):
+        lines.append(f"{number}. {describe(task)}")
+    lines.append("Reply with the number or the ID, or say 'cancel'.")
+    return "\n".join(lines)
+
+
+ORDINALS = {
+    "first": 1, "1st": 1, "second": 2, "2nd": 2, "third": 3, "3rd": 3,
+    "fourth": 4, "4th": 4, "fifth": 5, "5th": 5,
+}
+
+
+def parse_choice(text, options):
+    """Return a task ID from options, 'cancel', or None if the reply isn't an answer."""
+    t = text.strip().lower()
+    if re.fullmatch(r"(cancel|never ?mind|stop|none|no|neither)\W*", t):
+        return "cancel"
+
+    match = re.search(r"tsk-(\d{1,9})", t)
+    if match:
+        task_id = f"TSK-{int(match.group(1)):06d}"
+        return task_id if task_id in options else None
+
+    if re.search(r"\blast\b", t):
+        return options[-1]
+    for word in re.findall(r"[a-z0-9]+", t):
+        if word in ORDINALS:
+            number = ORDINALS[word]
+            return options[number - 1] if number <= len(options) else None
+
+    match = re.fullmatch(r"(?:number |no\.? |#)?(\d{1,2})[.)]?", t)
+    if match:
+        number = int(match.group(1))
+        return options[number - 1] if 1 <= number <= len(options) else None
+    return None
+
+
+def resume(pending, reply):
+    """Continue a plan after the user answered a clarification.
+    Returns a result dict, or None if the reply wasn't an answer (treat it as a new message)."""
+    choice = parse_choice(reply, pending["options"])
+    if choice is None:
+        return None
+    if choice == "cancel":
+        return {"message": "Okay, cancelled. Nothing was changed.", "tasks_changed": False}
+
+    plan = ActionPlan(**pending["plan"])  # validated again, never trusted blindly
+    chosen = {int(k): v for k, v in pending["chosen"].items()}
+    chosen[pending["index"]] = choice
+    return execute_plan(plan, chosen)
+
+
+# ---------- Entry point ----------
+
+def execute_plan(plan: ActionPlan, chosen=None):
+    """Returns {"message", "tasks_changed"} and, if a question was asked, "pending"."""
+    chosen = chosen or {}
     if not plan.actions:
         return {"message": plan.reply or "I'm not sure what to do. Could you rephrase?",
                 "tasks_changed": False}
 
-    prepared = prepare(plan)  # raises TaskError before anything is changed
+    try:
+        prepared = prepare(plan, chosen)  # raises TaskError before anything is changed
+    except Ambiguous as e:
+        return {
+            "message": _question(e),
+            "tasks_changed": False,
+            "pending": {
+                "plan": plan.model_dump(mode="json"),
+                "chosen": {str(k): v for k, v in chosen.items()},
+                "index": e.index,
+                "options": [t["id"] for t in e.candidates],
+            },
+        }
 
     lines, changed = [], False
     for action, task in prepared:

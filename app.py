@@ -1,18 +1,19 @@
 import os
 
 from dotenv import load_dotenv
-from flask import Flask, jsonify, render_template, request
+from flask import Flask, jsonify, render_template, request,session
 from werkzeug.exceptions import HTTPException
 
 import task_service
 from agent import PlannerError, plan_actions
 from db import init_db
-from executor import execute_plan
+from executor import execute_plan, resume
 from task_service import TaskError
 
 load_dotenv()
 
 app = Flask(__name__)
+app.secret_key = os.getenv("SECRET_KEY") or "dev-only-change-me"
 init_db()
 
 try:
@@ -135,10 +136,24 @@ def api_chat():
     if len(message) > 1000:
         raise TaskError("message is too long (maximum 1000 characters)")
 
-    plan = plan_actions(message, clean_history(body.get("history")))
-    result = execute_plan(plan)
-    return ok(result["message"], tasks_changed=result["tasks_changed"])
+    # Did the bot ask a question last time? Then try to read this message as the answer.
+    result = None
+    pending = session.pop("pending", None)
+    if pending:
+        result = resume(pending, message)  # None means "not an answer, treat as a new request"
 
+    if result is None:
+        plan = plan_actions(message, clean_history(body.get("history")))
+        result = execute_plan(plan)
+
+    if result.get("pending"):
+        session["pending"] = result["pending"]
+
+    return ok(
+        result["message"],
+        tasks_changed=result["tasks_changed"],
+        needs_clarification=bool(result.get("pending")),
+    )
 
 if __name__ == "__main__":
     app.run(debug=True)
