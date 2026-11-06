@@ -146,7 +146,7 @@ Run on a fresh database. Real output from my runs: <<replace each with what you 
 
 ## Failures encountered and fixes
 
-See [FAILURES.md](FAILURES.md) for the full table.
+See FAILUE.md file for the full table.
 
 ## Project structure
 
