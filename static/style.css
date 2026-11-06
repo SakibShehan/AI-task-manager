@@ -234,6 +234,42 @@ h1 { margin: 0; font-size: 28px; color: var(--navy); }
 .msg.bot  { align-self: flex-start; background: #fff; border: 1px solid var(--line); }
 .msg.error { align-self: flex-start; background: #fde9e6; color: #a8332a; border: 1px solid #f5c6c0; }
 
+.msg.ask {
+  align-self: flex-start;
+  background: #fff8e6;
+  border: 1px solid #f1d58a;
+  color: #6b4b00;
+}
+.msg.ask::before {
+  content: "Needs your answer";
+  display: block;
+  font-size: 10.5px;
+  font-weight: 800;
+  letter-spacing: 0.6px;
+  text-transform: uppercase;
+  color: #b07a00;
+  margin-bottom: 4px;
+}
+
+.msg.thinking { color: var(--muted); }
+.msg.thinking::after {
+  content: "";
+  display: inline-block;
+  width: 1.2em;
+  text-align: left;
+  animation: dots 1.2s steps(4, end) infinite;
+}
+@keyframes dots {
+  0%   { content: ""; }
+  25%  { content: "."; }
+  50%  { content: ".."; }
+  75%  { content: "..."; }
+}
+
+.instruction textarea:disabled { background: transparent; color: #a3adc2; cursor: not-allowed; }
+.clear-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+.clear-btn:disabled:hover { background: #fff; border-color: #c9d6f2; color: #3a5498; }
+
 .instruction {
   margin-top: 10px;
   background: #fff;

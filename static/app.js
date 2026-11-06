@@ -33,7 +33,7 @@ function loadChat() {
     if (!data || !Array.isArray(data.messages)) return false;
 
     savedMessages = data.messages
-      .filter((m) => m && ["user", "bot", "error"].includes(m.kind) && typeof m.text === "string")
+      .filter((m) => m && ["user", "bot", "error", "ask"].includes(m.kind) && typeof m.text === "string")
       .slice(-MAX_SAVED);
     history = Array.isArray(data.history)
       ? data.history
@@ -213,22 +213,46 @@ function addMessage(kind, text, { save = true } = {}) {
   }
 }
 
+let busy = false;
+
+function setBusy(state) {
+  busy = state;
+  input.disabled = state;
+  sendBtn.disabled = state;
+  clearBtn.disabled = state;
+  sendBtn.textContent = state ? "Sending..." : "Send";
+}
+
 async function sendMessage(text) {
+  if (busy) return;
+  setBusy(true);
+
   addMessage("user", text);
-  const thinking = el("div", "msg bot", "Thinking...");
+  const thinking = el("div", "msg bot thinking", "Thinking");
   messages.appendChild(thinking);
   messages.scrollTop = messages.scrollHeight;
-  sendBtn.disabled = true;
+
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 90000);
 
   try {
     const res = await fetch("/api/chat", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ message: text, history }),
+      signal: controller.signal,
     });
-    const data = await res.json();
+
+    let data;
+    try {
+      data = await res.json();
+    } catch (err) {
+      throw new Error("bad-response");
+    }
+
     thinking.remove();
-    addMessage(data.success ? "bot" : "error", data.message);
+    const kind = !data.success ? "error" : data.needs_clarification ? "ask" : "bot";
+    addMessage(kind, data.message);
 
     history.push({ role: "user", content: text });
     history.push({ role: "assistant", content: data.message });
@@ -238,15 +262,23 @@ async function sendMessage(text) {
     if (data.tasks_changed) loadTasks();
   } catch (err) {
     thinking.remove();
-    addMessage("error", "Could not reach the server. Is it running?");
+    if (err.name === "AbortError") {
+      addMessage("error", "The request took too long and was cancelled. Please try again.");
+    } else if (err.message === "bad-response") {
+      addMessage("error", "The server sent an unexpected reply. Please try again.");
+    } else {
+      addMessage("error", "Could not reach the server. Is it running?");
+    }
   } finally {
-    sendBtn.disabled = false;
+    clearTimeout(timer);
+    setBusy(false);
     input.focus();
   }
 }
 
 form.addEventListener("submit", (e) => {
   e.preventDefault();
+  if (busy) return;
   const text = input.value.trim();
   if (!text) return;
   input.value = "";
@@ -263,6 +295,7 @@ input.addEventListener("keydown", (e) => {
 
 /* ---------- Clear chat ---------- */
 clearBtn.addEventListener("click", () => {
+  if (busy) return;
   if (!confirm("Clear the whole chat? Your tasks will not be affected.")) return;
   savedMessages = [];
   history = [];
