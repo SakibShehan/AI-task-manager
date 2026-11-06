@@ -17,10 +17,21 @@ from task_service import TaskError
 ID_PATTERN = re.compile(r"^TSK-\d{1,9}$", re.IGNORECASE)
 MAX_LISTED = 15
 
-# Cosine distance: lower = more similar. Tune these using /api/search (see the test step).
+# Cosine distance: lower = more similar. Tune these using /api/search.
 MATCH_MAX_DISTANCE = float(os.getenv("MATCH_MAX_DISTANCE") or 0.65)  # to change/delete a task
 FIND_MAX_DISTANCE = float(os.getenv("FIND_MAX_DISTANCE") or 0.70)    # for "show tasks about ..."
-AMBIGUITY_GAP = 0.05  # matches this close to the best one count as equally good
+AMBIGUITY_GAP = float(os.getenv("AMBIGUITY_GAP") or 0.15)  # matches this close to the best count as equally good
+
+# Filler words ignored when comparing a phrase with task titles
+STOPWORDS = {
+    "the", "a", "an", "my", "our", "this", "that", "it", "one", "task", "tasks",
+    "to", "for", "of", "on", "in", "and", "please",
+}
+
+
+def _keywords(text):
+    words = re.findall(r"[a-z0-9]+", text.lower())
+    return {w for w in words if w not in STOPWORDS and len(w) > 1}
 
 
 class Ambiguous(Exception):
@@ -48,14 +59,29 @@ def resolve_target(target, prefer_unfinished=False):
     if ID_PATTERN.match(text):
         return task_service.get_task(text.upper())  # raises TaskError if missing
 
+    all_tasks = task_service.list_tasks()
+
     # 2) Exact title (case-insensitive)
-    exact = [t for t in task_service.list_tasks() if t["title"].strip().lower() == text.lower()]
+    exact = [t for t in all_tasks if t["title"].strip().lower() == text.lower()]
     if len(exact) == 1:
         return exact[0]
     if len(exact) > 1:
         raise Ambiguous(target, exact)
 
-    # 3) Semantic search with a relevance cutoff
+    # 3) Keyword match: every meaningful word of the phrase appears in the title
+    words = _keywords(text)
+    if words:
+        pool = all_tasks
+        if prefer_unfinished:
+            unfinished = [t for t in all_tasks if t["status"] != "Done"]
+            pool = unfinished or all_tasks
+        by_words = [t for t in pool if words <= _keywords(t["title"])]
+        if len(by_words) == 1:
+            return by_words[0]
+        if len(by_words) > 1:
+            raise Ambiguous(target, by_words[:5])
+
+    # 4) Semantic search with a relevance cutoff
     hits = task_service.search_tasks(
         text, n=5, unfinished_only=prefer_unfinished, max_distance=MATCH_MAX_DISTANCE
     )
@@ -117,7 +143,7 @@ def prepare(plan, chosen):
     return prepared
 
 
-# ---------- Step 2: run the validated actions ----------
+# ---------- Step 2: find (read-only) ----------
 
 def _run_find(action):
     status, priority = _find_filters(action)
@@ -144,8 +170,6 @@ def _run_find(action):
     if len(found) > MAX_LISTED:
         text += f"\n...and {len(found) - MAX_LISTED} more."
     return text
-
-
 
 
 # ---------- Clarification ----------
@@ -204,7 +228,8 @@ def resume(pending, reply):
     return execute_plan(plan, chosen)
 
 
-# ---------- Entry point ----------
+# ---------- Step 3: run all changes in ONE transaction ----------
+
 def _build_operations(prepared):
     """Turn validated actions into batch operations.
     Returns (operations, slots) where slots[i] is the operation index for action i, or None."""
@@ -272,33 +297,3 @@ def execute_plan(plan: ActionPlan, chosen=None):
             lines.append(f"Deleted {results[slot]['id']}: {results[slot]['title']}")
 
     return {"message": "\n".join(lines), "tasks_changed": bool(operations)}
-    """Returns {"message", "tasks_changed"} and, if a question was asked, "pending"."""
-    chosen = chosen or {}
-    if not plan.actions:
-        return {"message": plan.reply or "I'm not sure what to do. Could you rephrase?",
-                "tasks_changed": False}
-
-    try:
-        prepared = prepare(plan, chosen)  # raises TaskError before anything is changed
-    except Ambiguous as e:
-        return {
-            "message": _question(e),
-            "tasks_changed": False,
-            "pending": {
-                "plan": plan.model_dump(mode="json"),
-                "chosen": {str(k): v for k, v in chosen.items()},
-                "index": e.index,
-                "options": [t["id"] for t in e.candidates],
-            },
-        }
-
-    lines, changed = [], False
-    for action, task in prepared:
-        try:
-            text, did_change = _run_one(action, task)
-        except TaskError as e:
-            text, did_change = f"Could not run {action.type}: {e}", False
-        lines.append(text)
-        changed = changed or did_change
-
-    return {"message": "\n".join(lines), "tasks_changed": changed}

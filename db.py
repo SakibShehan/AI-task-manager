@@ -69,13 +69,18 @@ def init_db():
 
 
 def _next_task_id(conn):
-    """Increase the counter and return the next ID like TSK-000001."""
+    """Return the next ID like TSK-000001.
+    The counter only goes up while tasks exist, so IDs are never reused.
+    When the table is completely empty, numbering restarts at 1."""
+    remaining = conn.execute("SELECT COUNT(*) AS n FROM tasks").fetchone()["n"]
+    if remaining == 0:
+        conn.execute("UPDATE counters SET value = 0 WHERE name = 'task'")
+
     conn.execute("UPDATE counters SET value = value + 1 WHERE name = 'task'")
     value = conn.execute(
         "SELECT value FROM counters WHERE name = 'task'"
     ).fetchone()["value"]
     return f"TSK-{value:06d}"
-
 
 def create_task(title, description=None, status="Todo", priority="Medium", due_date=None):
     with get_conn() as conn:
